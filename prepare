@@ -1,0 +1,151 @@
+#!/bin/bash
+
+useradd bunny
+timedatectl set-timezone 'Asia\Novosibirsk'
+apt update
+apt install -y apt-transport-https lsb-release ca-certificates wget curl nano python3 python3-pip lua5.3 liblua5.3-dev vsftpd htop nmon firebird3.0-server firebird-dev texlive texlive-fonts-extra texlive-lang-cyrillic apache2 libexpat1 libexpat1-dev libboost-dev net-tools lynx stunnel4 sudo qtbase5-dev qtscript5-dev memcached python3-pymemcache libreadline-dev zlib1g-dev liblua5.3-dev openssl libssl-dev libcurl4-openssl-dev mc lftp git vim libmysqlclient-dev golang cron
+add-apt-repository ppa:ondrej/php
+apt-get update
+apt install -y php7.3 php7.3-memcached php7.3-interbase
+a2enmod php7.3
+wget https://people.debian.org/~sgolovan/debian/pool/main/tex/tex-pscyr/tex-pscyr_0.4d~beta9-2_all.deb
+apt install -y ./tex-pscyr_0.4d~beta9-2_all.deb
+rm -f tex-pscyr_0.4d~beta9-2_all.deb
+mkdir FAUDF
+cd FAUDF
+wget http://freeadhocudf.org/downloads/LIN64_FreeAdhocUDF20101206.tar.gz
+gunzip LIN64_FreeAdhocUDF20101206.tar.gz
+tar xvf LIN64_FreeAdhocUDF20101206.tar
+rm -f LIN64_FreeAdhocUDF20101206.tar
+cp ./install/UDF_Linux/FireBird/FreeAdhocUDF_FB2x_amd64.so /usr/lib/x86_64-linuxgnu/firebird/3.0/UDF/FreeAdhocUDF.so
+cp ./install/UDF_Linux/icu/64bit/libicudataFAU.so.44.2 /lib/x86_64-linux-gnu/libicudataFAU.so.44
+cp ./install/UDF_Linux/icu/64bit/libicui18nFAU.so.44.2 /lib/x86_64-linux-gnu/libicui18nFAU.so.44
+cp ./install/UDF_Linux/icu/64bit/libicuucFAU.so.44.2 /lib/x86_64-linux-gnu/libicuucFAU.so.44
+cd ..
+rm -fr FAUDF
+apt install -y rabbitmq-server
+rabbitmqctl add_vhost site
+rabbitmqctl add_user bunny bunny
+rabbitmqctl set_user_tags bunny administrator
+rabbitmqctl set_permissions -p / bunny ".*" ".*" ".*"
+rabbitmqctl set_permissions -p site bunny ".*" ".*" ".*"
+rabbitmq-plugins enable rabbitmq_management
+rabbitmqadmin -u bunny -p bunny declare exchange --vhost=site name=email type=fanout
+rabbitmqadmin -u bunny -p bunny declare queue --vhost=site name=email
+rabbitmqadmin -u bunny -p bunny --vhost=site declare binding source=email destination_type="queue" destination=email
+usermod -aG sudo,firebird bunny
+usermod -aG daemon www-data
+cd /
+mkdir -p /bunny/base
+mkdir -p /bunny/site
+chown -R bunny:bunny /bunny
+chown -R firebird:firebird /bunny/base
+useradd -m -s /bin/bash stunnel
+mkdir -p /home/stunnel/certs
+mkdir -p /home/stunnel/clients
+mkdir -p /home/stunnel/crls
+cat << EOF >> /etc/stunnel/stunnel.conf
+foreground = no
+cert = /home/stunnel/certs/bunny.crt
+key = /home/stunnel/certs/bunny.key
+chroot = /home/stunnel
+pid = /stunnel.pid
+setuid = stunnel
+setgid = stunnel
+debug = 2
+output = /stunnel.log
+verifyPeer = yes
+CApath = /clients
+CRLpath = /crls
+[bunny]
+ accept = 37465
+ connect = 3050
+EOF
+cat << EOF >> /home/stunnel/certlink.sh
+#!/bin/sh
+#
+# usage: certlink.sh filename [filename ...]
+for CERTFILE in "$@"; do
+ # Убедиться, что файл существует и это сертификат
+ test -f "$CERTFILE" || continue
+ HASH=$(openssl x509 -noout -hash -in "$CERTFILE")
+ test -n "$HASH" || continue
+ # использовать для ссылки наименьший итератор
+ for ITER in 0 1 2 3 4 5 6 7 8 9; do
+ test -f "${HASH}.${ITER}" && continue
+ ln -s "$CERTFILE" "${HASH}.${ITER}"
+ test -L "${HASH}.${ITER}" && break
+ done
+done
+EOF
+chmod +x /home/stunnel/certlink.sh
+cd /home/stunnel/certs
+openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out bunny.crt -keyout bunny.key
+cd /home/stunnel/clients
+openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out me.pem -keyout me.pem
+cd /home/stunnel/certs
+/home/stunnel/certlink.sh clientcert.pem
+systemctl restart stunnel4
+systemctl enable stunnel4
+chmod -R stunnel:stunnel /home/stunnel
+sed -i 's/RemoteBindAddress = localhost/RemoteBindAddress =/g' /etc/firebird/3.0/firebird.conf 
+sed -i 's/UdfAccess = None/UdfAccess = Restrict UDF/g' /etc/firebird/3.0/firebird.conf
+echo "bunny = /bunny/base/bunny.fdb" >> /etc/firebird/3.0/databases.conf
+systemctl restart firebird3.0.service
+systemctl enable firebird3.0.service
+sed -i 's/ibase.dateformat = "%Y-%m-%d"/ibase.dateformat = "%d.%m.%Y"/g' /etc/php/7.3/apache2/php.ini
+sed -i 's/ibase.timestampformat = "%Y-%m-%d %H:%M:%S"/ibase.timestampformat = "%d.%m.%Y %H.%M"/g' /etc/php/7.3/apache2/php.ini
+sed '474a\display_warnings = Off' /etc/php/7.3/apache2/php.ini
+sed -i 's/error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT/error_reporting = ~E_ALL/g' /etc/php/7.3/apache2/php.ini
+sed -i 's/;date.timezone =/date.timezone = "Europe/Moscow"/g' /etc/php/7.3/apache2/php.ini
+sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 40M/g' /etc/php/7.3/apache2/php.ini
+sed -i 's/post_max_size = 8M/post_max_size = 40M/g' /etc/php/7.3/apache2/php.ini
+apt install -y php7.3-mbstring
+phpenmod mbstring
+cd /home/bunny
+ln -s /bunny/site ~/site
+echo "It's Work" > /bunny/site/index.html
+a2enmod ssl
+cd /etc/apache2
+mkdir ssl
+cd ssl
+openssl req -new -x509 -days 365 -nodes -out cert.pem -keyout cert.key
+cat <<EOF>> /etc/apache2/sites-available/site-bunny.conf
+<VirtualHost *:80>
+ DocumentRoot /bunny/site
+ ErrorLog ${APACHE_LOG_DIR}/site_bunny_error.log
+ CustomLog ${APACHE_LOG_DIR}/site_bunny_access.log combined
+ <Directory /bunny/site/>
+ Options Indexes ExecCGI FollowSymLinks
+ Allow from all
+ AllowOverride all
+ Require all granted
+ </Directory>
+ <Location "/server-status">
+ SetHandler server-status
+ Require local
+ </Location>
+</VirtualHost>
+EOF
+a2ensite site-bunny.conf
+cat <<EOF>> /etc/apache2/sites-available/site-bunny-ssl.conf
+<VirtualHost *:443>
+ DocumentRoot /bunny/site
+ ErrorLog ${APACHE_LOG_DIR}/site_bunny_ssl_error.log
+ CustomLog ${APACHE_LOG_DIR}/site_bunny_ssl_access.log combined
+ SSLEngine on
+ SSLCertificateFile ssl/cert.pem
+ SSLCertificateKeyFile ssl/cert.key
+ <Directory /bunny/site/>
+ Options Indexes FollowSymLinks
+ AllowOverride None
+ Require all granted
+ </Directory>
+ <Location "/server-status">
+ SetHandler server-status
+ Require local
+ </Location>
+</VirtualHost>
+EOF
+a2ensite site-bunny-ssl.conf
+a2dissite 000-default.conf
